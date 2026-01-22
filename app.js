@@ -31,6 +31,26 @@
   /** Seleciona um elemento no DOM */
   const $ = (sel) => document.querySelector(sel);
 
+  /** Navegação robusta: atualiza hash e força route() (evita "clique não faz nada" por cache/hash igual) */
+  function navTo(path) {
+    if (!path) return;
+    const clean = String(path).startsWith("/") ? String(path) : ("/" + String(path).replace(/^#/, ""));
+    const newHash = "#" + clean;
+    if (location.hash !== newHash) location.hash = newHash;
+    // força render imediato (alguns browsers/mobile podem atrasar hashchange)
+    try { route(); } catch {}
+  }
+
+  // Delegação global para data-go (não depende de bindEvents / re-render)
+  document.addEventListener("click", (ev) => {
+    const goEl = ev.target && ev.target.closest ? ev.target.closest("[data-go]") : null;
+    if (goEl) {
+      ev.preventDefault();
+      const target = goEl.getAttribute("data-go");
+      navTo(target);
+    }
+  });
+
   /** Tenta fazer o parse de JSON, senão retorna fallback */
   function safeJsonParse(str, fallback) {
     try {
@@ -1882,335 +1902,26 @@
   }
 
   /** Liga eventos interativos após renderização */
-  
-function bindEvents() {
-    // Delegação global (1x) para evitar botões "sem ação" após re-render
-    if (window.__vfm26_delegated) return;
-    window.__vfm26_delegated = true;
-
-    // Click: data-go e data-action
-    document.addEventListener('click', async (ev) => {
-      const goEl = ev.target.closest && ev.target.closest('[data-go]');
-      if (goEl) {
-        const target = goEl.getAttribute('data-go');
-        if (target) location.hash = target;
-        return;
-      }
-
-      const actEl = ev.target.closest && ev.target.closest('[data-action]');
-      if (!actEl) return;
-
-      const action = actEl.getAttribute('data-action');
-      if (!action) return;
-
-      // Helpers
-      const slotIdFrom = () => Number(actEl.getAttribute('data-slot') || 0);
-      const packIdFrom = () => actEl.getAttribute('data-pack');
-      const clubIdFrom = () => actEl.getAttribute('data-club');
-      const playerIdFrom = () => actEl.getAttribute('data-player') || actEl.getAttribute('data-pid');
-      const staffIdFrom = () => actEl.getAttribute('data-staff');
-      const sponsorIdFrom = () => actEl.getAttribute('data-sponsor');
-
-      try {
-        if (action === 'selectPack') {
-          const packId = packIdFrom();
+  function bindEvents() {
+    // Navegação via data-go
+    document.querySelectorAll('[data-go]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const target = el.getAttribute('data-go');
+        navTo(target);
+      });
+    });
+    // Ações
+    document.querySelectorAll('[data-action]').forEach((el) => {
+      const action = el.getAttribute('data-action');
+      if (action === 'selectPack') {
+        el.addEventListener('click', async () => {
+          const packId = el.getAttribute('data-pack');
           state.settings.selectedPackId = packId;
           saveSettings();
           await loadPackData();
           route();
-          return;
-        }
-
-        if (action === 'goSlots') {
-          location.hash = '/slots';
-          return;
-        }
-
-        if (action === 'newSlot') {
-          const slotId = slotIdFrom();
-          state.settings.activeSlotId = slotId;
-          saveSettings();
-          const pack = state.packs.find((p) => p.id === state.settings.selectedPackId);
-          const save = {
-            meta: { createdAt: nowIso(), updatedAt: nowIso(), summary: `Carreira • ${pack?.name || state.settings.selectedPackId}` },
-            career: { coachName: '', nationality: 'Brasil', clubId: null, leagueFilter: '', clubSearch: '' },
-            squad: {}, tactics: {}, training: {},
-            progress: {}
-          };
-          writeSlot(slotId, save);
-          location.hash = '/career-create';
-          return;
-        }
-
-        if (action === 'continueSlot') {
-          const slotId = slotIdFrom();
-          const existing = readSlot(slotId);
-          if (existing) {
-            state.settings.activeSlotId = slotId;
-            saveSettings();
-            location.hash = existing.career?.clubId ? '/hub' : '/career-create';
-          }
-          return;
-        }
-
-        if (action === 'deleteSlot') {
-          const slotId = slotIdFrom();
-          clearSlot(slotId);
-          route();
-          return;
-        }
-
-        if (action === 'careerContinueToClub') {
-          location.hash = '/club-pick';
-          return;
-        }
-
-        if (action === 'pickClub') {
-          const clubId = clubIdFrom();
-          const save = activeSave();
-          if (!save) return;
-          save.career.clubId = clubId;
-          save.meta.updatedAt = nowIso();
-          save.meta.summary = `Carreira • ${getClub(clubId)?.name || 'Clube'}`;
-          writeSlot(state.settings.activeSlotId, save);
-          route();
-          return;
-        }
-
-        if (action === 'confirmClub') {
-          location.hash = '/tutorial';
-          return;
-        }
-
-        if (action === 'finishTutorial') {
-          location.hash = '/hub';
-          return;
-        }
-
-        if (action === 'saveProgress') {
-          const save = activeSave();
-          if (!save) return;
-          save.meta.updatedAt = nowIso();
-          writeSlot(state.settings.activeSlotId, save);
-          route();
-          return;
-        }
-
-        if (action === 'resetCareer') {
-          const save = activeSave();
-          if (!save) return;
-          // limpa sistemas de temporada mas mantém carreira (coach/club)
-          delete save.season;
-          delete save.finance;
-          delete save.sponsorship;
-          delete save.staff;
-          delete save.transfers;
-          save.meta.updatedAt = nowIso();
-          writeSlot(state.settings.activeSlotId, save);
-          route();
-          return;
-        }
-
-        if (action === 'playNextRound') {
-          const save = activeSave();
-          if (!save) return;
-          ensureSystems(save);
-          ensureSeason(save);
-
-          const rounds = save.season.rounds || [];
-          const r = save.season.currentRound || 0;
-          if (r >= rounds.length) return;
-
-          const matches = rounds[r] || [];
-          matches.forEach(m => {
-            if (m.played) return;
-            const sim = simulateMatch(m.homeId, m.awayId, save);
-            m.hg = sim.hg; m.ag = sim.ag; m.played = true;
-            m.xgH = sim.lamHome; m.xgA = sim.lamAway;
-            applyResultToTable(save.season.table, m.homeId, m.awayId, m.hg, m.ag);
-          });
-
-          // Simula Série B em background para promo/rebaixamento
-          const b = save.season.ext?.otherLeagues?.BRA_SERIE_B;
-          if (b && Array.isArray(b.rounds) && b.currentRound < b.rounds.length) {
-            const bMatches = b.rounds[b.currentRound] || [];
-            bMatches.forEach(m => {
-              if (m.played) return;
-              const sim = simulateMatch(m.homeId, m.awayId, save, { leagueId: 'BRA_SERIE_B' });
-              m.hg = sim.hg; m.ag = sim.ag; m.played = true;
-              applyResultToTable(b.table, m.homeId, m.awayId, m.hg, m.ag);
-            });
-            b.currentRound += 1;
-          }
-
-          // Atualiza finanças semanais
-          const weeklyCost = (save.finance?.weeklyCost || 0);
-          const sponsorIncome = (save.sponsorship?.current?.weekly || 0);
-          if (!save.finance) save.finance = { cash: 0 };
-          save.finance.cash = Math.max(0, (save.finance.cash || 0) + sponsorIncome - weeklyCost);
-
-          save.season.currentRound = r + 1;
-          save.meta.updatedAt = nowIso();
-          writeSlot(state.settings.activeSlotId, save);
-          route();
-          return;
-        }
-
-        // Transfers
-        if (action === 'buyPlayer') {
-          const pid = playerIdFrom();
-          const save = activeSave();
-          if (!save) return;
-          ensureSystems(save);
-          
-          const p = (state.packData?.players?.players || []).find(x => x.id === pid);
-          if (!p) return;
-          const price = Number(p.value || 0);
-          if (!save.finance) save.finance = { cash: 0 };
-          if ((save.finance.cash || 0) < price) return;
-          save.finance.cash = (save.finance.cash || 0) - price;
-          if (!save.squad) save.squad = { players: [] };
-          save.squad.players.push({ ...p, clubId: save.career.clubId, source: 'transfer' });
-          if (!save.transfers) save.transfers = {};
-          if (!save.transfers.bought) save.transfers.bought = [];
-          save.transfers.bought.push(pid);
-    
-          save.meta.updatedAt = nowIso();
-          writeSlot(state.settings.activeSlotId, save);
-          route();
-          return;
-        }
-        if (action === 'sellPlayer') {
-          const pid = playerIdFrom();
-          const save = activeSave();
-          if (!save) return;
-          ensureSystems(save);
-          
-          if (!save.squad) return;
-          const idx = (save.squad.players || []).findIndex(x => x.id === pid);
-          if (idx < 0) return;
-          const p = save.squad.players[idx];
-          const price = Math.max(0, Number(p.value || 0) * 0.6);
-          if (!save.finance) save.finance = { cash: 0 };
-          save.finance.cash = (save.finance.cash || 0) + price;
-          save.squad.players.splice(idx, 1);
-    
-          save.meta.updatedAt = nowIso();
-          writeSlot(state.settings.activeSlotId, save);
-          route();
-          return;
-        }
-
-        // Staff
-        if (action === 'hireStaff') {
-          const sid = staffIdFrom();
-          const save = activeSave();
-          if (!save) return;
-          ensureSystems(save);
-          /* staff MVP: sem ação aqui */
-          save.meta.updatedAt = nowIso();
-          writeSlot(state.settings.activeSlotId, save);
-          route();
-          return;
-        }
-
-        // Sponsorship
-        if (action === 'selectSponsor') {
-          const spid = sponsorIdFrom();
-          const save = activeSave();
-          if (!save) return;
-          ensureSystems(save);
-          /* sponsorship MVP: sem ação aqui */
-          save.meta.updatedAt = nowIso();
-          writeSlot(state.settings.activeSlotId, save);
-          route();
-          return;
-        }
-
-      } catch (err) {
-        // evita travar a UI caso uma ação falhe
-        console.error('Ação falhou:', action, err);
-        state.ui = state.ui || {};
-        state.ui.error = (err && err.message) ? err.message : String(err);
-        route();
+        });
       }
-    });
-
-    // change/input delegados (filtros e selects)
-    document.addEventListener('change', (ev) => {
-      const el = ev.target;
-      if (!el) return;
-
-      // league filter on club pick
-      if (el.getAttribute('data-action') === 'setLeagueFilter') {
-        const save = activeSave();
-        if (!save) return;
-        save.career.leagueFilter = el.value;
-        save.career.clubSearch = '';
-        save.meta.updatedAt = nowIso();
-        writeSlot(state.settings.activeSlotId, save);
-        route();
-        return;
-      }
-
-      // formation
-      if (el.getAttribute('data-action') === 'setFormation') {
-        const save = activeSave();
-        if (!save) return;
-        ensureSystems(save);
-        if (!save.tactics) save.tactics = {};
-        save.tactics.formation = el.value;
-        save.meta.updatedAt = nowIso();
-        writeSlot(state.settings.activeSlotId, save);
-        route();
-        return;
-      }
-
-      // comp view selector
-      if (el.getAttribute('data-field') === 'compView') {
-        const save = activeSave();
-        if (!save) return;
-        if (!save.ui) save.ui = {};
-        save.ui.compView = el.value || 'LEAGUE';
-        save.meta.updatedAt = nowIso();
-        writeSlot(state.settings.activeSlotId, save);
-        route();
-        return;
-      }
-    });
-
-    document.addEventListener('input', (ev) => {
-      const el = ev.target;
-      if (!el) return;
-      if (el.getAttribute('data-action') === 'clubSearchInput') {
-        const save = activeSave();
-        if (!save) return;
-        save.career.clubSearch = el.value;
-        save.meta.updatedAt = nowIso();
-        writeSlot(state.settings.activeSlotId, save);
-        route();
-        return;
-      }
-      if (el.getAttribute('data-field') === 'coachName') {
-        const save = activeSave();
-        if (!save) return;
-        save.career.coachName = el.value;
-        save.meta.updatedAt = nowIso();
-        writeSlot(state.settings.activeSlotId, save);
-        // não chama route a cada tecla para evitar flicker
-        return;
-      }
-      if (el.getAttribute('data-field') === 'nationality') {
-        const save = activeSave();
-        if (!save) return;
-        save.career.nationality = el.value;
-        save.meta.updatedAt = nowIso();
-        writeSlot(state.settings.activeSlotId, save);
-        return;
-      }
-    });
-  }
-
       if (action === 'goSlots') {
         el.addEventListener('click', () => {
           location.hash = '/slots';
@@ -2637,8 +2348,8 @@ function bindEvents() {
     ensureSlots();
     await loadPacks();
     await loadPackData();
-    if (!location.hash) location.hash = '/home';
-    route();
+    if (!location.hash) navTo('/home');
+    else route();
   }
 
   boot();
