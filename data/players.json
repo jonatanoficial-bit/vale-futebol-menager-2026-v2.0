@@ -1,0 +1,18 @@
+{
+  "players": [
+    {
+      "id": "san1",
+      "clubId": "santos",
+      "name": "Jogador 1",
+      "pos": "ATT",
+      "overall": 72
+    },
+    {
+      "id": "pal1",
+      "clubId": "palmeiras",
+      "name": "Jogador 1",
+      "pos": "MID",
+      "overall": 75
+    }
+  ]
+}

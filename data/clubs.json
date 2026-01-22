@@ -1,0 +1,34 @@
+{
+  "clubs": [
+    {
+      "id": "santos",
+      "name": "Santos",
+      "league": "BRA_A"
+    },
+    {
+      "id": "palmeiras",
+      "name": "Palmeiras",
+      "league": "BRA_A"
+    },
+    {
+      "id": "corinthians",
+      "name": "Corinthians",
+      "league": "BRA_A"
+    },
+    {
+      "id": "saopaulo",
+      "name": "São Paulo",
+      "league": "BRA_A"
+    },
+    {
+      "id": "river",
+      "name": "River Plate",
+      "league": "ARG_A"
+    },
+    {
+      "id": "boca",
+      "name": "Boca Juniors",
+      "league": "ARG_A"
+    }
+  ]
+}
