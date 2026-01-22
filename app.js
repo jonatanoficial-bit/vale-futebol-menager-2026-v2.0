@@ -21,7 +21,6 @@
         splash.setAttribute('aria-hidden','true');}, 600);
     }
   });
-  });
 
   // Failsafe: garante que o splash some mesmo em hosts com cache agressivo
   window.addEventListener("load", () => {
@@ -2334,7 +2333,6 @@
   }
 
   boot();
-})()
   function renderExtraNextMatches(nextCup, nextCont, save) {
     const parts = [];
     if (Array.isArray(nextCup) && nextCup.length) {
@@ -2369,3 +2367,4 @@
     `;
   }
 ;
+})();
