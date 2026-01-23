@@ -331,12 +331,12 @@
             <div class="card-header">
               <div>
                 <div class="card-title">Erro ao abrir a tela</div>
-                <div class="card-subtitle">Rota: <b>${'${esc(path)}'}</b></div>
+                <div class="card-subtitle">Rota: <b>${esc(path)}</b></div>
               </div>
               <span class="badge">Falha</span>
             </div>
             <div class="card-body">
-              <div class="notice">⚠️ ${'${esc(msg)}'}</div>
+              <div class="notice">⚠️ ${esc(msg)}</div>
               <div class="sep"></div>
               <div class="row">
                 <button class="btn btn-primary" data-go="/home" type="button">Voltar ao Menu</button>
@@ -1296,7 +1296,7 @@
         if (k === 'fairPlay') continue;
         if (k === 'drawLots') continue;
       }
-      return a.name.localeCompare(b.name);
+            return String(a.name||'').localeCompare(String(b.name||''));
     });
   }
 
@@ -1406,7 +1406,7 @@
       if (b.Pts !== a.Pts) return b.Pts - a.Pts;
       if (b.GD !== a.GD) return b.GD - a.GD;
       if (b.GF !== a.GF) return b.GF - a.GF;
-      return a.name.localeCompare(b.name);
+            return String(a.name||'').localeCompare(String(b.name||''));
     });
   }
 
