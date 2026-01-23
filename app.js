@@ -38,7 +38,8 @@
     const newHash = "#" + clean;
     if (location.hash !== newHash) location.hash = newHash;
     // força render imediato (alguns browsers/mobile podem atrasar hashchange)
-    try { route(); } catch {}
+    // NÃO engole erros: se uma view quebrar, mostramos um cartão de erro.
+    route();
   }
 
   // Delegação global para data-go (não depende de bindEvents / re-render)
@@ -314,13 +315,40 @@
     const hash = location.hash.replace("#", "");
     const path = hash || "/home";
     const view = routes[path] || viewHome;
-    const html = view();
-    // Renderiza no container e vincula eventos
+
     const viewEl = document.getElementById("view");
-    if (viewEl) {
-      viewEl.innerHTML = html;
+
+    try {
+      const html = view();
+      if (viewEl) viewEl.innerHTML = html;
+      bindEvents();
+    } catch (err) {
+      console.error("[VFM] Erro ao renderizar rota:", path, err);
+      if (viewEl) {
+        const msg = (err && (err.message || String(err))) ? (err.message || String(err)) : "Erro desconhecido";
+        viewEl.innerHTML = `
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="card-title">Erro ao abrir a tela</div>
+                <div class="card-subtitle">Rota: <b>${'${esc(path)}'}</b></div>
+              </div>
+              <span class="badge">Falha</span>
+            </div>
+            <div class="card-body">
+              <div class="notice">⚠️ ${'${esc(msg)}'}</div>
+              <div class="sep"></div>
+              <div class="row">
+                <button class="btn btn-primary" data-go="/home" type="button">Voltar ao Menu</button>
+                <button class="btn" data-go="/hub" type="button">HUB</button>
+              </div>
+              <div class="sep"></div>
+              <div class="small">Dica: se isso acontecer após atualizar, faça Ctrl+F5 ou limpe cache.</div>
+            </div>
+          </div>
+        `;
+      }
     }
-    bindEvents();
   }
 
   // Ouve mudança de hash para atualizar a rota
