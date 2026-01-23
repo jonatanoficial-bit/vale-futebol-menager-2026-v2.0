@@ -1047,7 +1047,62 @@
   // Temporada / Jogos (Liga)
   // -----------------------------
 
-  function ensureSeason(save) {
+  
+  // -----------------------------
+  // Scheduling helpers
+  // -----------------------------
+  // Gera calendário de liga em turno e returno (double round-robin).
+  // Entrada: array de clubIds (string).
+  // Saída: array de rounds: [{ round: 1, matches: [{homeId, awayId}...] }, ...]
+  function generateDoubleRoundRobin(clubIds) {
+    const ids = (clubIds || []).map(String);
+    // Se ímpar, adiciona BYE
+    const list = ids.slice();
+    const BYE = "__BYE__";
+    if (list.length % 2 === 1) list.push(BYE);
+
+    const n = list.length;
+    if (n < 2) return [];
+
+    // Método do círculo
+    const fixed = list[0];
+    let rot = list.slice(1);
+
+    function oneLeg() {
+      const rounds = [];
+      for (let r = 0; r < n - 1; r++) {
+        const left = [fixed, ...rot.slice(0, (n - 1) / 2)];
+        const right = rot.slice((n - 1) / 2).slice().reverse();
+
+        const matches = [];
+        for (let i = 0; i < left.length; i++) {
+          const a = left[i];
+          const b = right[i];
+          if (a === BYE || b === BYE) continue;
+
+          // Alterna mando para balancear
+          const swap = (r + i) % 2 === 1;
+          matches.push(swap ? { homeId: b, awayId: a } : { homeId: a, awayId: b });
+        }
+        rounds.push({ round: r + 1, matches });
+
+        // rotaciona
+        rot = [rot[rot.length - 1], ...rot.slice(0, rot.length - 1)];
+      }
+      return rounds;
+    }
+
+    const first = oneLeg();
+
+    // Segundo turno inverte mando
+    const second = first.map((rd, i) => ({
+      round: first.length + i + 1,
+      matches: rd.matches.map(m => ({ homeId: m.awayId, awayId: m.homeId }))
+    }));
+
+    return [...first, ...second];
+  }
+function ensureSeason(save) {
     if (!save.season) save.season = {};
     if (save.season.id && save.season.leagueId && Array.isArray(save.season.rounds)) return;
 
@@ -2265,4 +2320,3 @@
   }
 ;
 })();
-test
