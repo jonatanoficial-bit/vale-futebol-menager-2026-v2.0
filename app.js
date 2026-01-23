@@ -1605,7 +1605,19 @@
     });
   }
 
-  function viewCompetitions() {
+  
+function viewCompetitionsSafe() {
+  const root = document.getElementById('app');
+  root.innerHTML = `
+    <div class="card">
+      <h2>Competições</h2>
+      <p>Modo competições ativo.</p>
+      <p>Calendário e tabelas serão exibidos aqui.</p>
+    </div>
+  `;
+}
+
+function viewCompetitions() {
     return requireSave((save) => {
       ensureSystems(save);
       ensureSeason(save);
