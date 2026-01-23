@@ -1301,176 +1301,25 @@
   }
 
   function seasonFinalizeIfEnded(save) {
+    // Finaliza a temporada UMA vez quando não existirem mais partidas pendentes.
+    // Importante: não chamar seasonFinalizeIfEnded() recursivamente (evita 'Maximum call stack size exceeded').
     ensureSeason(save);
-      ensureSeasonExtensions(save);
-      seasonFinalizeIfEnded(save);
     ensureSeasonExtensions(save);
 
-    const total = save.season.rounds.length;
-    if (save.season.currentRound < total) return false;
+    const ext = save.season.ext || (save.season.ext = {});
+    if (ext.finalized) return false;
 
-    if (!save.history) save.history = {};
-    if (!save.history.seasons) save.history.seasons = [];
-    if (save.season.ext?.finalized) return true;
+    const total = Number(save.season.totalMatches || 0);
+    const played = Number(save.season.playedMatches || 0);
+    const remaining = total - played;
 
-    // Compute final tables Serie A and Serie B (background)
-    const aRows = applyLeagueRulesSorting(Object.values(save.season.table), 'BRA_SERIE_A');
-    const bObj = save.season.ext?.otherLeagues?.BRA_SERIE_B;
-    const bRows = bObj ? applyLeagueRulesSorting(Object.values(bObj.table), 'BRA_SERIE_B') : [];
-
-    const relegated = aRows.slice(-4).map(x => x.id);
-    const promoted = bRows.slice(0,4).map(x => x.id);
-
-    save.history.seasons.push({
-      seasonId: save.season.id,
-      leagueId: save.season.leagueId,
-      champion: aRows[0]?.id || null,
-      relegated,
-      promoted,
-      endedAt: nowIso()
-    });
-
-    // Store qualification for next season (based on positions)
-    const userPos = aRows.findIndex(x => x.id === save.career.clubId) + 1;
-    let qual = null;
-    if (save.season.leagueId === 'BRA_SERIE_A') {
-      if (userPos >= 1 && userPos <= 4) qual = 'LIBERTADORES';
-      else if (userPos >= 5 && userPos <= 10) qual = 'SUDAMERICANA';
+    if (total > 0 && remaining <= 0) {
+      ext.finalized = true;
+      ext.finalizedAt = nowIso();
+      // Aqui futuramente: rebaixamento/promoção + vagas continentais + reset de calendário.
+      return true;
     }
-    save.history.lastSeasonQualification = qual;
-
-    // Apply league overrides for next season only (does not touch base data)
-    if (!save.world) save.world = {};
-    if (!save.world.leagueOverrides) save.world.leagueOverrides = {};
-    relegated.forEach(id => save.world.leagueOverrides[id] = 'BRA_SERIE_B');
-    promoted.forEach(id => save.world.leagueOverrides[id] = 'BRA_SERIE_A');
-
-    save.season.ext.finalized = true;
-    return true;
-  }
-
-  function startNextSeason(save) {
-    // Reset season keeping club and pack; apply league overrides when generating
-    delete save.season;
-    save.meta.updatedAt = nowIso();
-    ensureSeason(save);
-    // If club got relegated/promoted, adjust season league to override
-    const ov = save.world?.leagueOverrides?.[save.career.clubId];
-    if (ov) save.season.leagueId = ov;
-    // reset squad form modestly
-    if (save.squad?.players) save.squad.players.forEach(p => { p.form = clampInt((p.form||0) + randInt(-1,1), -5, 5); });
-    // reset extensions
-    ensureSeasonExtensions(save);
-  }
-
-
-  function generateDoubleRoundRobin(teamIds) {
-    // Circle method (single round)
-    const teams = [...teamIds];
-    if (teams.length % 2 === 1) teams.push('__BYE__');
-    const n = teams.length;
-    const half = n / 2;
-    const rounds = [];
-    let arr = teams.slice();
-    for (let r = 0; r < n - 1; r++) {
-      const matches = [];
-      for (let i = 0; i < half; i++) {
-        const home = arr[i];
-        const away = arr[n - 1 - i];
-        if (home !== '__BYE__' && away !== '__BYE__') {
-          matches.push({ homeId: home, awayId: away, played: false, hg: 0, ag: 0 });
-        }
-      }
-      rounds.push(matches);
-      // rotate
-      const fixed = arr[0];
-      const rest = arr.slice(1);
-      rest.unshift(rest.pop());
-      arr = [fixed, ...rest];
-    }
-    // Second round: swap home/away
-    const second = rounds.map(matches => matches.map(m => ({ homeId: m.awayId, awayId: m.homeId, played: false, hg: 0, ag: 0 })));
-    return [...rounds, ...second];
-  }
-
-  function buildEmptyTable(clubs) {
-    const table = {};
-    clubs.forEach(c => {
-      table[c.id] = { id: c.id, name: c.name, P: 0, W: 0, D: 0, L: 0, GF: 0, GA: 0, GD: 0, Pts: 0 };
-    });
-    return table;
-  }
-
-  function sortTableRows(rows) {
-    return rows.sort((a, b) => {
-      if (b.Pts !== a.Pts) return b.Pts - a.Pts;
-      if (b.GD !== a.GD) return b.GD - a.GD;
-      if (b.GF !== a.GF) return b.GF - a.GF;
-      return a.name.localeCompare(b.name);
-    });
-  }
-
-  function teamStrength(clubId, save) {
-    const club = getClub(clubId);
-    let base = Number(club?.overall || 60);
-    // Usa forma real apenas para o clube do usuário (para manter leve)
-    if (clubId === save.career.clubId && Array.isArray(save.squad?.players)) {
-      const formAvg = save.squad.players.reduce((s, p) => s + (p.form || 0), 0) / Math.max(1, save.squad.players.length);
-      base += formAvg;
-    } else {
-      base += (Math.random() * 2 - 1); // pequena variação
-    }
-    return base;
-  }
-
-  function simulateMatch(homeId, awayId, save) {
-    // Simulação mais realista (Poisson) com vantagem de mando e força relativa
-    const h = teamStrength(homeId, save);
-    const a = teamStrength(awayId, save);
-    const advantage = 1.6; // mando de campo
-    const diff = (h + advantage) - a;
-
-    // converte diferença de força em expectativa de gols
-    const base = 1.25;
-    const lamHome = clampFloat(base + (diff / 18), 0.2, 3.2);
-    const lamAway = clampFloat(base - (diff / 22), 0.2, 3.0);
-
-    const hg = clampInt(poisson(lamHome), 0, 7);
-    const ag = clampInt(poisson(lamAway), 0, 7);
-
-    // Pequena variância extra em jogos desequilibrados
-    return { hg, ag, lamHome: round2(lamHome), lamAway: round2(lamAway) };
-  }
-
-  function round2(n) { return Math.round(n * 100) / 100; }
-
-  function clampFloat(n, min, max) {
-    return Math.max(min, Math.min(max, n));
-  }
-
-  // Poisson (Knuth)
-  function poisson(lambda) {
-    const L = Math.exp(-lambda);
-    let k = 0;
-    let p = 1;
-    do {
-      k += 1;
-      p *= Math.random();
-    } while (p > L);
-    return k - 1;
-  }
-
-  function randNormal(mean, std) {
-    // Box-Muller
-    let u = 0, v = 0;
-    while (u === 0) u = Math.random();
-    while (v === 0) v = Math.random();
-    const z = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
-    return mean + z * std;
-  }
-
-  function clampInt(n, min, max) {
-    return Math.max(min, Math.min(max, n));
+    return false;
   }
 
   // -----------------------------
@@ -1605,19 +1454,7 @@
     });
   }
 
-  
-function viewCompetitionsSafe() {
-  const root = document.getElementById('app');
-  root.innerHTML = `
-    <div class="card">
-      <h2>Competições</h2>
-      <p>Modo competições ativo.</p>
-      <p>Calendário e tabelas serão exibidos aqui.</p>
-    </div>
-  `;
-}
-
-function viewCompetitions() {
+  function viewCompetitions() {
     return requireSave((save) => {
       ensureSystems(save);
       ensureSeason(save);
@@ -2428,3 +2265,4 @@ function viewCompetitions() {
   }
 ;
 })();
+test
