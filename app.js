@@ -1296,7 +1296,7 @@
         if (k === 'fairPlay') continue;
         if (k === 'drawLots') continue;
       }
-            return String(a.name||'').localeCompare(String(b.name||''));
+      return a.name.localeCompare(b.name);
     });
   }
 
@@ -1406,7 +1406,7 @@
       if (b.Pts !== a.Pts) return b.Pts - a.Pts;
       if (b.GD !== a.GD) return b.GD - a.GD;
       if (b.GF !== a.GF) return b.GF - a.GF;
-            return String(a.name||'').localeCompare(String(b.name||''));
+      return a.name.localeCompare(b.name);
     });
   }
 
