@@ -1301,96 +1301,51 @@
   }
 
   function seasonFinalizeIfEnded(save) {
-    // Finaliza a temporada apenas quando TODAS as partidas da liga principal foram jogadas.
-    // NÃO pode chamar a si mesma (evita loop/stack overflow).
-    if (!save || !save.season) return false;
+    ensureSeason(save);
+      ensureSeasonExtensions(save);
+      seasonFinalizeIfEnded(save);
+    ensureSeasonExtensions(save);
 
-    const season = save.season;
-    const leagueId = season.leagueId;
-    const leagueMatches = (season.matches || []).filter(m => m.compId === leagueId);
+    const total = save.season.rounds.length;
+    if (save.season.currentRound < total) return false;
 
-    const allPlayed = leagueMatches.length > 0 && leagueMatches.every(m => m.played);
-    if (!allPlayed) return false;
+    if (!save.history) save.history = {};
+    if (!save.history.seasons) save.history.seasons = [];
+    if (save.season.ext?.finalized) return true;
 
-    if (season._finalized) return true;
-    season._finalized = true;
+    // Compute final tables Serie A and Serie B (background)
+    const aRows = applyLeagueRulesSorting(Object.values(save.season.table), 'BRA_SERIE_A');
+    const bObj = save.season.ext?.otherLeagues?.BRA_SERIE_B;
+    const bRows = bObj ? applyLeagueRulesSorting(Object.values(bObj.table), 'BRA_SERIE_B') : [];
 
-    season.finished = true;
-    season.finishedAt = Date.now();
+    const relegated = aRows.slice(-4).map(x => x.id);
+    const promoted = bRows.slice(0,4).map(x => x.id);
 
-    // Classificação final ordenada (array)
-    if (season.table && typeof season.table === 'object') {
-      season.finalTable = sortTableRows(season.table);
+    save.history.seasons.push({
+      seasonId: save.season.id,
+      leagueId: save.season.leagueId,
+      champion: aRows[0]?.id || null,
+      relegated,
+      promoted,
+      endedAt: nowIso()
+    });
+
+    // Store qualification for next season (based on positions)
+    const userPos = aRows.findIndex(x => x.id === save.career.clubId) + 1;
+    let qual = null;
+    if (save.season.leagueId === 'BRA_SERIE_A') {
+      if (userPos >= 1 && userPos <= 4) qual = 'LIBERTADORES';
+      else if (userPos >= 5 && userPos <= 10) qual = 'SUDAMERICANA';
     }
+    save.history.lastSeasonQualification = qual;
 
-    // Promoção/rebaixamento Brasil A<->B (se existir no pack)
-    try {
-      const pack = getActivePack();
-      const rules = pack?.rules || {};
-      const relegation = Number(rules?.BRAZIL_RELEGATION_SLOTS ?? 4);
+    // Apply league overrides for next season only (does not touch base data)
+    if (!save.world) save.world = {};
+    if (!save.world.leagueOverrides) save.world.leagueOverrides = {};
+    relegated.forEach(id => save.world.leagueOverrides[id] = 'BRA_SERIE_B');
+    promoted.forEach(id => save.world.leagueOverrides[id] = 'BRA_SERIE_A');
 
-      if (leagueId === 'BRA_SERIE_A' && relegation > 0) {
-        const serieB = (pack?.competitions?.leagues || []).find(l => l.id === 'BRA_SERIE_B');
-        if (serieB) {
-          const ext = season.ext || (season.ext = {});
-          // Série B: tabela pode estar em ext.tables['BRA_SERIE_B'] ou ext.br2Table (objeto)
-          let br2TableObj = ext?.tables?.['BRA_SERIE_B'] || ext?.br2Table || null;
-          const br2Sorted = sortTableRows(br2TableObj);
-
-          const br1Sorted = sortTableRows(season.table);
-
-          const down = br1Sorted.slice(-relegation).map(r => r.id);
-          const up = br2Sorted.slice(0, relegation).map(r => r.id);
-
-          if (Array.isArray(pack?.clubs) && up.length && down.length) {
-            const byId = new Map(pack.clubs.map(c => [c.id, c]));
-            down.forEach(id => { const c = byId.get(id); if (c) c.leagueId = 'BRA_SERIE_B'; });
-            up.forEach(id => { const c = byId.get(id); if (c) c.leagueId = 'BRA_SERIE_A'; });
-            ext._promo = { up, down, at: Date.now() };
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('[VFM] promo/rebaixamento falhou:', e);
-    }
-
-    return true;
-  }// (Opcional) aplica promoção/rebaixamento Brasil A<->B se existirem ambos no pack e se regras estiverem configuradas
-    try {
-      const pack = getActivePack();
-      const rules = pack?.rules || {};
-      const enableBR = true;
-
-      if (enableBR && leagueId === 'BRA_SERIE_A' && Array.isArray(season.finalTable)) {
-        const relegation = Number(rules?.BRAZIL_RELEGATION_SLOTS ?? 4);
-        // tenta achar a Série B pelo pack
-        const serieB = (pack?.competitions?.leagues || []).find(l => l.id === 'BRA_SERIE_B');
-        if (serieB && relegation > 0) {
-          const ext = season.ext || (season.ext = {});
-          ext._promo = ext._promo || {};
-          // pega tabela final da B se existir em ext.tables ou calcula a partir de ext.br2Table
-          let br2Table = [];
-          if (Array.isArray(ext?.tables?.['BRA_SERIE_B'])) br2Table = sortTableRows(ext.tables['BRA_SERIE_B']);
-          else if (Array.isArray(ext?.br2Table)) br2Table = sortTableRows(ext.br2Table);
-
-          const down = season.finalTable.slice(-relegation).map(r => r.clubId);
-          const up = br2Table.slice(0, relegation).map(r => r.clubId);
-
-          // aplica nos clubes do pack (salvo no save) para próxima temporada
-          // pack.clubs é referência do estado do jogo; alteramos apenas leagueId.
-          if (Array.isArray(pack?.clubs) && up.length && down.length) {
-            const clubById = new Map(pack.clubs.map(c => [c.id, c]));
-            down.forEach(id => { const c = clubById.get(id); if (c) c.leagueId = 'BRA_SERIE_B'; });
-            up.forEach(id => { const c = clubById.get(id); if (c) c.leagueId = 'BRA_SERIE_A'; });
-            ext._promo.last = { up, down, at: Date.now() };
-          }
-        }
-      }
-    } catch (e) {
-      // não quebrar o jogo por conta de promoção/rebaixamento
-      console.warn('[VFM] promo/rebaixamento falhou:', e);
-    }
-
+    save.season.ext.finalized = true;
     return true;
   }
 
@@ -1447,48 +1402,13 @@
   }
 
   function sortTableRows(rows) {
-    // Aceita:
-    //  - Array de linhas já prontas: [{id,name,P,J,V,E,D,GF,GA,GD,Pts}, ...]
-    //  - Objeto de tabela: { CLUB_ID: {id,name,...}, ... }
-    const arr = Array.isArray(rows) ? rows.slice() : (rows && typeof rows === 'object' ? Object.values(rows) : []);
-    arr.sort((a, b) => {
-      const pts = (b.Pts ?? 0) - (a.Pts ?? 0); if (pts) return pts;
-      const gd  = (b.GD  ?? 0) - (a.GD  ?? 0); if (gd) return gd;
-      const gf  = (b.GF  ?? 0) - (a.GF  ?? 0); if (gf) return gf;
-      const w   = (b.W   ?? 0) - (a.W   ?? 0); if (w) return w;
-      return String(a.name||a.id||'').localeCompare(String(b.name||b.id||''));
+    return rows.sort((a, b) => {
+      if (b.Pts !== a.Pts) return b.Pts - a.Pts;
+      if (b.GD !== a.GD) return b.GD - a.GD;
+      if (b.GF !== a.GF) return b.GF - a.GF;
+      return a.name.localeCompare(b.name);
     });
-    return arr;
   }
-
-  function computeTableFromMatches(clubIds, matches) {
-    const pack = getActivePack();
-    const byId = new Map((pack?.clubs || []).map(c => [c.id, c]));
-    const table = {};
-    (clubIds || []).forEach(id => {
-      const c = byId.get(id);
-      table[id] = { id, name: c?.name || id, P:0, J:0, W:0, D:0, L:0, GF:0, GA:0, GD:0, Pts:0 };
-    });
-
-    (matches || []).forEach(m => {
-      if (!m || !m.played) return;
-      const home = table[m.home]; const away = table[m.away];
-      if (!home || !away) return;
-      home.J++; away.J++;
-      home.GF += m.goalsHome; home.GA += m.goalsAway;
-      away.GF += m.goalsAway; away.GA += m.goalsHome;
-
-      if (m.goalsHome > m.goalsAway) { home.W++; away.L++; home.Pts += 3; }
-      else if (m.goalsHome < m.goalsAway) { away.W++; home.L++; away.Pts += 3; }
-      else { home.D++; away.D++; home.Pts += 1; away.Pts += 1; }
-      home.GD = home.GF - home.GA;
-      away.GD = away.GF - away.GA;
-    });
-
-    return table;
-  }
-
-
 
   function teamStrength(clubId, save) {
     const club = getClub(clubId);
@@ -1685,7 +1605,251 @@
     });
   }
 
-  function viewCompetitions() {
+  
+  // =========================================================
+  // COMPETIÇÕES (UI) — corpo da tela (tabelas / mata-mata)
+  // Mantém UI existente e apenas garante renderização estável
+  // =========================================================
+  function renderCompetitionsBody(save, compView) {
+    const season = save.season || {};
+    const ext = season.ext || {};
+    const leagues = (ext.leagues) || {};
+    const cups = (ext.cups) || {};
+    const continental = (ext.continental) || {};
+
+    // Monta lista de competições disponíveis (somente as que existem no save)
+    const items = [];
+    Object.keys(leagues).forEach((k) => items.push({ id: k, type: 'league', name: competitionName(k) }));
+    Object.keys(cups).forEach((k) => items.push({ id: k, type: 'cup', name: competitionName(k) }));
+    Object.keys(continental).forEach((k) => items.push({ id: k, type: 'continental', name: competitionName(k) }));
+
+    // Se não houver nada, mostra aviso sem quebrar
+    if (!items.length) {
+      return `<div class="muted">Nenhuma competição disponível neste save.</div>`;
+    }
+
+    const selected = (compView && compView.selected) ? compView.selected : items[0].id;
+    const current = items.find((x) => x.id === selected) || items[0];
+
+    // Persistência leve (sem recursão / sem re-render infinito)
+    save.ui = save.ui || {};
+    save.ui.competitions = save.ui.competitions || {};
+    save.ui.competitions.selected = current.id;
+
+    const selector = `
+      <div class="row" style="gap:12px;align-items:flex-end;flex-wrap:wrap;">
+        <div style="min-width:260px;flex:1">
+          <div class="label">Competição</div>
+          <select id="compSel" class="input" style="width:100%">
+            ${items.map(it => `<option value="${esc(it.id)}" ${it.id===current.id?'selected':''}>${esc(it.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="muted" style="padding-bottom:6px">
+          Temporada: ${esc(String(season.year || '—'))}
+        </div>
+      </div>
+      <div class="hr" style="margin:14px 0"></div>
+    `;
+
+    // Corpo específico por tipo
+    let body = '';
+    if (current.type === 'league') body = renderLeagueCompetition(leagues[current.id], current.id);
+    else if (current.type === 'cup') body = renderCupCompetition(cups[current.id], current.id);
+    else body = renderContinentalCompetition(continental[current.id], current.id);
+
+    // Hook de UI: trocar competição sem mudar layout
+    // (usa delegação simples e não depende de frameworks)
+    setTimeout(() => {
+      const el = document.getElementById('compSel');
+      if (el && !el.dataset.bound) {
+        el.dataset.bound = '1';
+        el.addEventListener('change', () => {
+          try {
+            const v = el.value;
+            const s = loadSaveActive();
+            if (!s) return;
+            s.ui = s.ui || {};
+            s.ui.competitions = s.ui.competitions || {};
+            s.ui.competitions.selected = v;
+            saveActive(s);
+            // força re-render da mesma rota
+            route('/competitions');
+          } catch (e) { console.error(e); }
+        });
+      }
+    }, 0);
+
+    return selector + body;
+  }
+
+  function competitionName(id) {
+    const map = {
+      'BRA_SERIE_A': 'Campeonato Brasileiro Série A',
+      'BRA_SERIE_B': 'Campeonato Brasileiro Série B',
+      'BRA_COPA_DO_BRASIL': 'Copa do Brasil',
+      'CONMEBOL_LIBERTADORES': 'CONMEBOL Libertadores',
+      'CONMEBOL_SUDAMERICANA': 'CONMEBOL Sul-Americana',
+    };
+    return map[id] || id;
+  }
+
+  function renderLeagueCompetition(leagueObj, compId) {
+    if (!leagueObj) return `<div class="muted">Liga não encontrada (${esc(compId)}).</div>`;
+    const teams = leagueObj.teams || [];
+    const table = leagueObj.table || {};
+    const sorted = teams.map(tid => ({ tid, ...(table[tid] || {}) }));
+    sorted.sort((a,b) => (b.pts||0)-(a.pts||0) || (b.gd||0)-(a.gd||0) || (b.gf||0)-(a.gf||0));
+
+    const rows = sorted.map((r, i) => {
+      const logo = clubLogoHtml(r.tid, 22);
+      const name = esc(getClubName(r.tid));
+      return `
+        <tr>
+          <td class="num">${i+1}</td>
+          <td class="teamcell">${logo}<span>${name}</span></td>
+          <td class="num">${r.p||0}</td>
+          <td class="num">${r.w||0}</td>
+          <td class="num">${r.d||0}</td>
+          <td class="num">${r.l||0}</td>
+          <td class="num">${r.gf||0}</td>
+          <td class="num">${r.ga||0}</td>
+          <td class="num">${r.gd||((r.gf||0)-(r.ga||0))}</td>
+          <td class="num strong">${r.pts||0}</td>
+        </tr>
+      `;
+    }).join('');
+
+    const legend = renderBrazilLegendIfNeeded(compId);
+
+    return `
+      <div class="card">
+        <div class="card-h">Classificação — ${esc(competitionName(compId))}</div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+        <th class="num">#</th><th>Clube</th>
+        <th class="num">J</th><th class="num">V</th><th class="num">E</th><th class="num">D</th>
+        <th class="num">GP</th><th class="num">GC</th><th class="num">SG</th><th class="num">PTS</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        ${legend}
+      </div>
+    `;
+  }
+
+  function renderBrazilLegendIfNeeded(compId) {
+    if (compId !== 'BRA_SERIE_A' && compId !== 'BRA_SERIE_B') return '';
+    if (compId === 'BRA_SERIE_A') {
+      return `<div class="muted" style="margin-top:10px">
+        Regras (padrão): Top 4 → Libertadores; 5–6 → Sul-Americana; Z4 → rebaixamento para Série B.
+      </div>`;
+    }
+    return `<div class="muted" style="margin-top:10px">
+      Regras (padrão): Top 4 → acesso para Série A; 17–20 → rebaixamento para Série C (não modelada; permanece “rebaixado” no histórico).
+    </div>`;
+  }
+
+  function renderCupCompetition(cupObj, compId) {
+    if (!cupObj) return `<div class="muted">Copa não encontrada (${esc(compId)}).</div>`;
+    const rounds = cupObj.rounds || [];
+    const curIdx = cupObj.currentRoundIndex ?? 0;
+    const r = rounds[curIdx] || rounds[0] || { name: 'Rodada', matches: [] };
+    const matches = (r.matches || []).map((m) => {
+      const h = m.homeId, a = m.awayId;
+      const hl = clubLogoHtml(h, 20), al = clubLogoHtml(a, 20);
+      const hn = esc(getClubName(h)), an = esc(getClubName(a));
+      const score = (m.played) ? `<span class="score">${m.homeGoals} - ${m.awayGoals}</span>` : `<span class="muted">vs</span>`;
+      return `
+        <div class="matchrow">
+          <div class="team">${hl}<span>${hn}</span></div>
+          <div class="center">${score}</div>
+          <div class="team right"><span>${an}</span>${al}</div>
+        </div>
+      `;
+    }).join('') || `<div class="muted">Sem jogos nesta fase.</div>`;
+
+    return `
+      <div class="card">
+        <div class="card-h">${esc(competitionName(compId))} — ${esc(r.name || 'Fase')}</div>
+        <div class="matchlist">${matches}</div>
+        <div class="muted" style="margin-top:10px">Mata-mata padrão: jogo único, pênaltis em caso de empate.</div>
+      </div>
+    `;
+  }
+
+  function renderContinentalCompetition(contObj, compId) {
+    if (!contObj) return `<div class="muted">Competição continental não encontrada (${esc(compId)}).</div>`;
+    const stage = contObj.stage || 'groups';
+
+    // Grupos: mostra tabelas
+    if (stage === 'groups') {
+      const groups = contObj.groups || {};
+      const tables = Object.keys(groups).sort().map((gk) => {
+        const g = groups[gk];
+        const teams = g.teams || [];
+        const table = g.table || {};
+        const sorted = teams.map(tid => ({ tid, ...(table[tid]||{}) }))
+          .sort((a,b) => (b.pts||0)-(a.pts||0) || (b.gd||0)-(a.gd||0) || (b.gf||0)-(a.gf||0));
+        const rows = sorted.map((r,i)=>`
+          <tr>
+            <td class="num">${i+1}</td>
+            <td class="teamcell">${clubLogoHtml(r.tid,20)}<span>${esc(getClubName(r.tid))}</span></td>
+            <td class="num">${r.p||0}</td>
+            <td class="num">${r.gf||0}</td>
+            <td class="num">${r.ga||0}</td>
+            <td class="num strong">${r.pts||0}</td>
+          </tr>`).join('');
+        return `
+          <div class="subcard">
+            <div class="subcard-h">Grupo ${esc(gk.replace('GROUP_',''))}</div>
+            <div class="table-wrap">
+              <table class="table">
+                <thead><tr><th class="num">#</th><th>Clube</th><th class="num">J</th><th class="num">GP</th><th class="num">GC</th><th class="num">PTS</th></tr></thead>
+                <tbody>${rows}</tbody>
+              </table>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      return `
+        <div class="card">
+          <div class="card-h">${esc(competitionName(compId))} — Fase de Grupos</div>
+          <div class="grid-2">${tables || '<div class="muted">Sem grupos.</div>'}</div>
+          <div class="muted" style="margin-top:10px">Regras (padrão): Top 2 avançam; 3º pode ir à repescagem da Sul-Americana (quando aplicável).</div>
+        </div>
+      `;
+    }
+
+    // Mata-mata: lista de confrontos do round atual
+    const rounds = contObj.rounds || [];
+    const idx = contObj.currentRoundIndex ?? 0;
+    const r = rounds[idx] || rounds[0] || { name: 'Mata-mata', matches: [] };
+    const matches = (r.matches || []).map(m => {
+      const h = m.homeId, a = m.awayId;
+      const hn = esc(getClubName(h)), an = esc(getClubName(a));
+      const score = m.played ? `<span class="score">${m.homeGoals} - ${m.awayGoals}</span>` : `<span class="muted">vs</span>`;
+      return `
+        <div class="matchrow">
+          <div class="team">${clubLogoHtml(h,20)}<span>${hn}</span></div>
+          <div class="center">${score}</div>
+          <div class="team right"><span>${an}</span>${clubLogoHtml(a,20)}</div>
+        </div>`;
+    }).join('') || `<div class="muted">Sem jogos.</div>`;
+
+    return `
+      <div class="card">
+        <div class="card-h">${esc(competitionName(compId))} — ${esc(r.name || 'Mata-mata')}</div>
+        <div class="matchlist">${matches}</div>
+      </div>
+    `;
+  }
+
+function viewCompetitions() {
     return requireSave((save) => {
       ensureSystems(save);
       ensureSeason(save);
@@ -2496,197 +2660,3 @@
   }
 ;
 })();
-  function renderCompetitionsBody(save, compView, league, tableHtml) {
-    const pack = getActivePack();
-    const leagues = (pack?.competitions?.leagues || []);
-    const cups = (pack?.competitions?.cups || []);
-    const ui = (save.ui || (save.ui = {}));
-
-    // ---- Seletor de ligas (dentro do modo LEAGUE) ----
-    const leagueOptions = leagues.map(l => `<option value="${esc(l.id)}" ${l.id === (ui.compLeagueId || save.season?.leagueId) ? 'selected' : ''}>${esc(l.name)}</option>`).join('');
-
-    // Decide qual liga mostrar
-    const selectedLeagueId = ui.compLeagueId || save.season?.leagueId || leagues[0]?.id;
-
-    // Computa/usa tabela da liga escolhida
-    let leagueTableObj = null;
-    if (selectedLeagueId === save.season?.leagueId && save.season?.table) {
-      leagueTableObj = save.season.table;
-    } else {
-      // calcula em tempo real a partir das partidas
-      const clubIds = (pack?.clubs || []).filter(c => c.leagueId === selectedLeagueId).map(c => c.id);
-      const matches = (save.season?.matches || []).filter(m => m.compId === selectedLeagueId);
-      leagueTableObj = computeTableFromMatches(clubIds, matches);
-    }
-    const leagueRows = sortTableRows(leagueTableObj);
-
-    const leagueTableHtml = `
-      <div style="display:flex;gap:10px;align-items:center;justify-content:space-between;margin:6px 0 10px;">
-        <div class="muted" style="font-size:12px;">Liga</div>
-        <select id="compLeagueSelect" class="vfm-select" data-field="compLeagueId" data-action="save">
-          ${leagueOptions}
-        </select>
-      </div>
-      <table class="vfm-table">
-        <thead>
-          <tr>
-            <th>#</th><th>Clube</th><th>J</th><th>V</th><th>E</th><th>D</th><th>GP</th><th>GC</th><th>SG</th><th>PTS</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${leagueRows.map((t, idx) => `
-            <tr>
-              <td>${idx+1}</td>
-              <td class="club">
-                <div class="clubcell">${clubLogoHtml(t.id, 18)}<span>${esc(t.name)}</span></div>
-              </td>
-              <td>${t.J}</td><td>${t.W}</td><td>${t.D}</td><td>${t.L}</td>
-              <td>${t.GF}</td><td>${t.GA}</td><td>${t.GD}</td><td class="pts">${t.Pts}</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-    `;
-
-    // ---- Copas/continentais ----
-    function findCupIdByHint(hint) {
-      const h = hint.toLowerCase();
-      const cup = cups.find(c => (c.id||'').toLowerCase().includes(h) || (c.name||'').toLowerCase().includes(h));
-      return cup?.id || null;
-    }
-    const mapViewToCompId = () => {
-      if (compView === 'CDB') return findCupIdByHint('brasil') || findCupIdByHint('copa do brasil') || 'BRA_COPA_DO_BRASIL';
-      if (compView === 'LIB') return findCupIdByHint('libert') || 'CONMEBOL_LIBERTADORES';
-      if (compView === 'SULA') return findCupIdByHint('sul') || 'CONMEBOL_SUDAMERICANA';
-      return null;
-    };
-
-    const cupCompId = mapViewToCompId();
-    const cupMatches = cupCompId ? (save.season?.matches || []).filter(m => m.compId === cupCompId) : [];
-    const upcoming = cupMatches.filter(m => !m.played).slice(0, 30);
-    const played = cupMatches.filter(m => m.played).slice(-30).reverse();
-
-    const renderMatchList = (arr) => arr.map(m => {
-      const h = getClub(m.home)?.name || m.home;
-      const a = getClub(m.away)?.name || m.away;
-      const score = m.played ? `${m.goalsHome}-${m.goalsAway}` : '—';
-      return `
-        <div class="matchrow">
-          <div class="clubcell">${clubLogoHtml(m.home,18)}<span>${esc(h)}</span></div>
-          <span class="score">${esc(score)}</span>
-          <div class="clubcell right"><span>${esc(a)}</span>${clubLogoHtml(m.away,18)}</div>
-        </div>
-      `;
-    }).join('');
-
-    const cupsHtml = !cupCompId ? `<div class="muted">Competição ainda não implementada neste pack.</div>` : `
-      <div class="muted" style="margin:8px 0;">Próximos jogos</div>
-      <div class="matchlist">${upcoming.length ? renderMatchList(upcoming) : '<div class="muted">Nenhum jogo agendado.</div>'}</div>
-      ${played.length ? `<div class="muted" style="margin:14px 0 8px;">Resultados</div><div class="matchlist">${renderMatchList(played)}</div>` : ''}
-    `;
-
-    const mode = compView || 'LEAGUE';
-    if (mode === 'LEAGUE') return leagueTableHtml;
-    if (mode === 'CDB' || mode === 'LIB' || mode === 'SULA') return cupsHtml;
-
-    // fallback
-    return tableHtml || leagueTableHtml;
-  }
-
-
-
-    return `
-      <div style="display:flex;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px;">
-        <div style="font-weight:800;">${esc(league?.name || 'Competições')}</div>
-        <div style="display:flex;gap:10px;align-items:center;">
-          <label class="muted" style="font-size:12px;">Competição</label>
-          <select id="compSelect" class="vfm-select">${optionsHtml}</select>
-        </div>
-      </div>
-      ${isLeague ? tableHtml : extra}
-    `;
-  }
-
-
-      if (!tableRows.length) {
-        bodyHtml = `<div class="muted">Tabela ainda não disponível. Jogue algumas partidas.</div>`;
-      } else {
-        const rowsHtml = tableRows.map((r, idx) => {
-          const club = getClub(r.clubId);
-          return `
-            <tr>
-              <td class="num">${idx+1}</td>
-              <td class="club">
-                <div class="clubcell">
-                  ${clubLogoHtml(r.clubId, 22)}
-                  <div class="clubname">${esc(club?.name || r.clubId)}</div>
-                </div>
-              </td>
-              <td class="num">${r.J ?? 0}</td>
-              <td class="num">${r.V ?? 0}</td>
-              <td class="num">${r.E ?? 0}</td>
-              <td class="num">${r.D ?? 0}</td>
-              <td class="num">${r.GP ?? 0}</td>
-              <td class="num">${r.GC ?? 0}</td>
-              <td class="num">${r.SG ?? ((r.GP??0)-(r.GC??0))}</td>
-              <td class="pts">${r.PTS ?? 0}</td>
-            </tr>
-          `;
-        }).join('');
-
-        bodyHtml = `
-          <div class="vfm-table-wrap">
-            <table class="vfm-table">
-              <thead>
-                <tr>
-                  <th>#</th><th>Clube</th>
-                  <th>J</th><th>V</th><th>E</th><th>D</th>
-                  <th>GP</th><th>GC</th><th>SG</th><th>PTS</th>
-                </tr>
-              </thead>
-              <tbody>${rowsHtml}</tbody>
-            </table>
-          </div>
-        `;
-      }
-    } else {
-      // Cups / continentals: show scheduled matches for this compId (if any)
-      const matches = (save?.season?.matches || []).filter(m => m.compId === compId);
-      const played = matches.filter(m => m.played);
-      const upcoming = matches.filter(m => !m.played);
-
-      const list = (arr) => arr.slice(0, 30).map(m => {
-        const h = getClub(m.home)?.name || m.home;
-        const a = getClub(m.away)?.name || m.away;
-        const score = m.played ? `<span class="score">${m.goalsHome}-${m.goalsAway}</span>` : `<span class="muted">—</span>`;
-        return `
-          <div class="matchrow">
-            <div class="clubcell">${clubLogoHtml(m.home,18)}<span>${esc(h)}</span></div>
-            ${score}
-            <div class="clubcell right"><span>${esc(a)}</span>${clubLogoHtml(m.away,18)}</div>
-          </div>
-        `;
-      }).join('');
-
-      bodyHtml = `
-        <div class="muted" style="margin-bottom:10px;">${esc(current.name)} • Partidas (mostrando até 30)</div>
-        <div class="matchlist">
-          ${upcoming.length ? list(upcoming) : '<div class="muted">Nenhuma partida agendada ainda.</div>'}
-        </div>
-        ${played.length ? `<div style="margin-top:14px;" class="muted">Resultados</div><div class="matchlist">${list(played.reverse())}</div>`:''}
-      `;
-    }
-
-    return `
-      <div class="row" style="display:flex;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px;">
-        <div style="font-weight:800;">${esc(current?.name || 'Competições')}</div>
-        <div style="display:flex;gap:10px;align-items:center;">
-          <label class="muted" style="font-size:12px;">Competição</label>
-          <select id="compSelect" class="vfm-select">${optionsHtml}</select>
-        </div>
-      </div>
-      ${bodyHtml}
-    `;
-  }
-
-
