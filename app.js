@@ -31,27 +31,6 @@
   /** Seleciona um elemento no DOM */
   const $ = (sel) => document.querySelector(sel);
 
-  /** Navegação robusta: atualiza hash e força route() (evita "clique não faz nada" por cache/hash igual) */
-  function navTo(path) {
-    if (!path) return;
-    const clean = String(path).startsWith("/") ? String(path) : ("/" + String(path).replace(/^#/, ""));
-    const newHash = "#" + clean;
-    if (location.hash !== newHash) location.hash = newHash;
-    // força render imediato (alguns browsers/mobile podem atrasar hashchange)
-    // NÃO engole erros: se uma view quebrar, mostramos um cartão de erro.
-    route();
-  }
-
-  // Delegação global para data-go (não depende de bindEvents / re-render)
-  document.addEventListener("click", (ev) => {
-    const goEl = ev.target && ev.target.closest ? ev.target.closest("[data-go]") : null;
-    if (goEl) {
-      ev.preventDefault();
-      const target = goEl.getAttribute("data-go");
-      navTo(target);
-    }
-  });
-
   /** Tenta fazer o parse de JSON, senão retorna fallback */
   function safeJsonParse(str, fallback) {
     try {
@@ -315,40 +294,13 @@
     const hash = location.hash.replace("#", "");
     const path = hash || "/home";
     const view = routes[path] || viewHome;
-
+    const html = view();
+    // Renderiza no container e vincula eventos
     const viewEl = document.getElementById("view");
-
-    try {
-      const html = view();
-      if (viewEl) viewEl.innerHTML = html;
-      bindEvents();
-    } catch (err) {
-      console.error("[VFM] Erro ao renderizar rota:", path, err);
-      if (viewEl) {
-        const msg = (err && (err.message || String(err))) ? (err.message || String(err)) : "Erro desconhecido";
-        viewEl.innerHTML = `
-          <div class="card">
-            <div class="card-header">
-              <div>
-                <div class="card-title">Erro ao abrir a tela</div>
-                <div class="card-subtitle">Rota: <b>${esc(path)}</b></div>
-              </div>
-              <span class="badge">Falha</span>
-            </div>
-            <div class="card-body">
-              <div class="notice">⚠️ ${esc(msg)}</div>
-              <div class="sep"></div>
-              <div class="row">
-                <button class="btn btn-primary" data-go="/home" type="button">Voltar ao Menu</button>
-                <button class="btn" data-go="/hub" type="button">HUB</button>
-              </div>
-              <div class="sep"></div>
-              <div class="small">Dica: se isso acontecer após atualizar, faça Ctrl+F5 ou limpe cache.</div>
-            </div>
-          </div>
-        `;
-      }
+    if (viewEl) {
+      viewEl.innerHTML = html;
     }
+    bindEvents();
   }
 
   // Ouve mudança de hash para atualizar a rota
@@ -1302,11 +1254,9 @@
 
   function seasonFinalizeIfEnded(save) {
     ensureSeason(save);
-      ensureSeasonExtensions(save);
-      seasonFinalizeIfEnded(save);
     ensureSeasonExtensions(save);
 
-    const total = save.season.rounds.length;
+const total = save.season.rounds.length;
     if (save.season.currentRound < total) return false;
 
     if (!save.history) save.history = {};
@@ -1605,251 +1555,7 @@
     });
   }
 
-  
-  // =========================================================
-  // COMPETIÇÕES (UI) — corpo da tela (tabelas / mata-mata)
-  // Mantém UI existente e apenas garante renderização estável
-  // =========================================================
-  function renderCompetitionsBody(save, compView) {
-    const season = save.season || {};
-    const ext = season.ext || {};
-    const leagues = (ext.leagues) || {};
-    const cups = (ext.cups) || {};
-    const continental = (ext.continental) || {};
-
-    // Monta lista de competições disponíveis (somente as que existem no save)
-    const items = [];
-    Object.keys(leagues).forEach((k) => items.push({ id: k, type: 'league', name: competitionName(k) }));
-    Object.keys(cups).forEach((k) => items.push({ id: k, type: 'cup', name: competitionName(k) }));
-    Object.keys(continental).forEach((k) => items.push({ id: k, type: 'continental', name: competitionName(k) }));
-
-    // Se não houver nada, mostra aviso sem quebrar
-    if (!items.length) {
-      return `<div class="muted">Nenhuma competição disponível neste save.</div>`;
-    }
-
-    const selected = (compView && compView.selected) ? compView.selected : items[0].id;
-    const current = items.find((x) => x.id === selected) || items[0];
-
-    // Persistência leve (sem recursão / sem re-render infinito)
-    save.ui = save.ui || {};
-    save.ui.competitions = save.ui.competitions || {};
-    save.ui.competitions.selected = current.id;
-
-    const selector = `
-      <div class="row" style="gap:12px;align-items:flex-end;flex-wrap:wrap;">
-        <div style="min-width:260px;flex:1">
-          <div class="label">Competição</div>
-          <select id="compSel" class="input" style="width:100%">
-            ${items.map(it => `<option value="${esc(it.id)}" ${it.id===current.id?'selected':''}>${esc(it.name)}</option>`).join('')}
-          </select>
-        </div>
-        <div class="muted" style="padding-bottom:6px">
-          Temporada: ${esc(String(season.year || '—'))}
-        </div>
-      </div>
-      <div class="hr" style="margin:14px 0"></div>
-    `;
-
-    // Corpo específico por tipo
-    let body = '';
-    if (current.type === 'league') body = renderLeagueCompetition(leagues[current.id], current.id);
-    else if (current.type === 'cup') body = renderCupCompetition(cups[current.id], current.id);
-    else body = renderContinentalCompetition(continental[current.id], current.id);
-
-    // Hook de UI: trocar competição sem mudar layout
-    // (usa delegação simples e não depende de frameworks)
-    setTimeout(() => {
-      const el = document.getElementById('compSel');
-      if (el && !el.dataset.bound) {
-        el.dataset.bound = '1';
-        el.addEventListener('change', () => {
-          try {
-            const v = el.value;
-            const s = loadSaveActive();
-            if (!s) return;
-            s.ui = s.ui || {};
-            s.ui.competitions = s.ui.competitions || {};
-            s.ui.competitions.selected = v;
-            saveActive(s);
-            // força re-render da mesma rota
-            route('/competitions');
-          } catch (e) { console.error(e); }
-        });
-      }
-    }, 0);
-
-    return selector + body;
-  }
-
-  function competitionName(id) {
-    const map = {
-      'BRA_SERIE_A': 'Campeonato Brasileiro Série A',
-      'BRA_SERIE_B': 'Campeonato Brasileiro Série B',
-      'BRA_COPA_DO_BRASIL': 'Copa do Brasil',
-      'CONMEBOL_LIBERTADORES': 'CONMEBOL Libertadores',
-      'CONMEBOL_SUDAMERICANA': 'CONMEBOL Sul-Americana',
-    };
-    return map[id] || id;
-  }
-
-  function renderLeagueCompetition(leagueObj, compId) {
-    if (!leagueObj) return `<div class="muted">Liga não encontrada (${esc(compId)}).</div>`;
-    const teams = leagueObj.teams || [];
-    const table = leagueObj.table || {};
-    const sorted = teams.map(tid => ({ tid, ...(table[tid] || {}) }));
-    sorted.sort((a,b) => (b.pts||0)-(a.pts||0) || (b.gd||0)-(a.gd||0) || (b.gf||0)-(a.gf||0));
-
-    const rows = sorted.map((r, i) => {
-      const logo = clubLogoHtml(r.tid, 22);
-      const name = esc(getClubName(r.tid));
-      return `
-        <tr>
-          <td class="num">${i+1}</td>
-          <td class="teamcell">${logo}<span>${name}</span></td>
-          <td class="num">${r.p||0}</td>
-          <td class="num">${r.w||0}</td>
-          <td class="num">${r.d||0}</td>
-          <td class="num">${r.l||0}</td>
-          <td class="num">${r.gf||0}</td>
-          <td class="num">${r.ga||0}</td>
-          <td class="num">${r.gd||((r.gf||0)-(r.ga||0))}</td>
-          <td class="num strong">${r.pts||0}</td>
-        </tr>
-      `;
-    }).join('');
-
-    const legend = renderBrazilLegendIfNeeded(compId);
-
-    return `
-      <div class="card">
-        <div class="card-h">Classificação — ${esc(competitionName(compId))}</div>
-        <div class="table-wrap">
-          <table class="table">
-            <thead>
-              <tr>
-        <th class="num">#</th><th>Clube</th>
-        <th class="num">J</th><th class="num">V</th><th class="num">E</th><th class="num">D</th>
-        <th class="num">GP</th><th class="num">GC</th><th class="num">SG</th><th class="num">PTS</th>
-              </tr>
-            </thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>
-        ${legend}
-      </div>
-    `;
-  }
-
-  function renderBrazilLegendIfNeeded(compId) {
-    if (compId !== 'BRA_SERIE_A' && compId !== 'BRA_SERIE_B') return '';
-    if (compId === 'BRA_SERIE_A') {
-      return `<div class="muted" style="margin-top:10px">
-        Regras (padrão): Top 4 → Libertadores; 5–6 → Sul-Americana; Z4 → rebaixamento para Série B.
-      </div>`;
-    }
-    return `<div class="muted" style="margin-top:10px">
-      Regras (padrão): Top 4 → acesso para Série A; 17–20 → rebaixamento para Série C (não modelada; permanece “rebaixado” no histórico).
-    </div>`;
-  }
-
-  function renderCupCompetition(cupObj, compId) {
-    if (!cupObj) return `<div class="muted">Copa não encontrada (${esc(compId)}).</div>`;
-    const rounds = cupObj.rounds || [];
-    const curIdx = cupObj.currentRoundIndex ?? 0;
-    const r = rounds[curIdx] || rounds[0] || { name: 'Rodada', matches: [] };
-    const matches = (r.matches || []).map((m) => {
-      const h = m.homeId, a = m.awayId;
-      const hl = clubLogoHtml(h, 20), al = clubLogoHtml(a, 20);
-      const hn = esc(getClubName(h)), an = esc(getClubName(a));
-      const score = (m.played) ? `<span class="score">${m.homeGoals} - ${m.awayGoals}</span>` : `<span class="muted">vs</span>`;
-      return `
-        <div class="matchrow">
-          <div class="team">${hl}<span>${hn}</span></div>
-          <div class="center">${score}</div>
-          <div class="team right"><span>${an}</span>${al}</div>
-        </div>
-      `;
-    }).join('') || `<div class="muted">Sem jogos nesta fase.</div>`;
-
-    return `
-      <div class="card">
-        <div class="card-h">${esc(competitionName(compId))} — ${esc(r.name || 'Fase')}</div>
-        <div class="matchlist">${matches}</div>
-        <div class="muted" style="margin-top:10px">Mata-mata padrão: jogo único, pênaltis em caso de empate.</div>
-      </div>
-    `;
-  }
-
-  function renderContinentalCompetition(contObj, compId) {
-    if (!contObj) return `<div class="muted">Competição continental não encontrada (${esc(compId)}).</div>`;
-    const stage = contObj.stage || 'groups';
-
-    // Grupos: mostra tabelas
-    if (stage === 'groups') {
-      const groups = contObj.groups || {};
-      const tables = Object.keys(groups).sort().map((gk) => {
-        const g = groups[gk];
-        const teams = g.teams || [];
-        const table = g.table || {};
-        const sorted = teams.map(tid => ({ tid, ...(table[tid]||{}) }))
-          .sort((a,b) => (b.pts||0)-(a.pts||0) || (b.gd||0)-(a.gd||0) || (b.gf||0)-(a.gf||0));
-        const rows = sorted.map((r,i)=>`
-          <tr>
-            <td class="num">${i+1}</td>
-            <td class="teamcell">${clubLogoHtml(r.tid,20)}<span>${esc(getClubName(r.tid))}</span></td>
-            <td class="num">${r.p||0}</td>
-            <td class="num">${r.gf||0}</td>
-            <td class="num">${r.ga||0}</td>
-            <td class="num strong">${r.pts||0}</td>
-          </tr>`).join('');
-        return `
-          <div class="subcard">
-            <div class="subcard-h">Grupo ${esc(gk.replace('GROUP_',''))}</div>
-            <div class="table-wrap">
-              <table class="table">
-                <thead><tr><th class="num">#</th><th>Clube</th><th class="num">J</th><th class="num">GP</th><th class="num">GC</th><th class="num">PTS</th></tr></thead>
-                <tbody>${rows}</tbody>
-              </table>
-            </div>
-          </div>
-        `;
-      }).join('');
-
-      return `
-        <div class="card">
-          <div class="card-h">${esc(competitionName(compId))} — Fase de Grupos</div>
-          <div class="grid-2">${tables || '<div class="muted">Sem grupos.</div>'}</div>
-          <div class="muted" style="margin-top:10px">Regras (padrão): Top 2 avançam; 3º pode ir à repescagem da Sul-Americana (quando aplicável).</div>
-        </div>
-      `;
-    }
-
-    // Mata-mata: lista de confrontos do round atual
-    const rounds = contObj.rounds || [];
-    const idx = contObj.currentRoundIndex ?? 0;
-    const r = rounds[idx] || rounds[0] || { name: 'Mata-mata', matches: [] };
-    const matches = (r.matches || []).map(m => {
-      const h = m.homeId, a = m.awayId;
-      const hn = esc(getClubName(h)), an = esc(getClubName(a));
-      const score = m.played ? `<span class="score">${m.homeGoals} - ${m.awayGoals}</span>` : `<span class="muted">vs</span>`;
-      return `
-        <div class="matchrow">
-          <div class="team">${clubLogoHtml(h,20)}<span>${hn}</span></div>
-          <div class="center">${score}</div>
-          <div class="team right"><span>${an}</span>${clubLogoHtml(a,20)}</div>
-        </div>`;
-    }).join('') || `<div class="muted">Sem jogos.</div>`;
-
-    return `
-      <div class="card">
-        <div class="card-h">${esc(competitionName(compId))} — ${esc(r.name || 'Mata-mata')}</div>
-        <div class="matchlist">${matches}</div>
-      </div>
-    `;
-  }
-
-function viewCompetitions() {
+  function viewCompetitions() {
     return requireSave((save) => {
       ensureSystems(save);
       ensureSeason(save);
@@ -2179,7 +1885,7 @@ function viewCompetitions() {
     document.querySelectorAll('[data-go]').forEach((el) => {
       el.addEventListener('click', () => {
         const target = el.getAttribute('data-go');
-        navTo(target);
+        if (target) location.hash = target;
       });
     });
     // Ações
@@ -2620,8 +2326,8 @@ function viewCompetitions() {
     ensureSlots();
     await loadPacks();
     await loadPackData();
-    if (!location.hash) navTo('/home');
-    else route();
+    if (!location.hash) location.hash = '/home';
+    route();
   }
 
   boot();
